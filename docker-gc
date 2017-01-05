@@ -66,6 +66,7 @@ trap "rm -f -- '$PID_DIR/dockergc'" EXIT
 
 echo $$ > $PID_DIR/dockergc
 
+echo "modified"
 
 EXCLUDE_FROM_GC=${EXCLUDE_FROM_GC:=/etc/docker-gc-exclude}
 if [ ! -f "$EXCLUDE_FROM_GC" ]
