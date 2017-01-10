@@ -38,19 +38,33 @@
 # When disabled, this script will instead log to standard out. When syslog is
 # enabled, the syslog facility and logger can be configured with
 # $SYSLOG_FACILITY and $SYSLOG_LEVEL respectively.
+# change log
+# 2017.01.10 modify by suin.kim & hojeong.han
+# 1. Branch the variable GRACE_PERIOD_SECONDS to the container and image. CONTAINER_PERIOD_SECONDS/IMAGE_PERIOD_SECONDS
+# 2. The container deletion period is changed from 1 hour to 5 days.
+# 3. Change the image deletion cycle from 1 hour to 3 days.
+# 4. When removing the state, divert the log level to warning.
+# 5. Change LOG_TO_SYSLOG value from 0 to 1 for logging
+
 
 set -o nounset
 set -o errexit
 
-GRACE_PERIOD_SECONDS=${GRACE_PERIOD_SECONDS:=3600}
+#modify GRACE_PERIOD_SECONDS
+#GRACE_PERIOD_SECONDS=${GRACE_PERIOD_SECONDS:=3600}
+CONTAINER_PERIOD_SECONDS=${GRACE_PERIOD_SECONDS:=432000} #5days
+IMAGE_PERIOD_SECONDS=${GRACE_PERIOD_SECONDS:=259200} #3days
 STATE_DIR=${STATE_DIR:=/var/lib/docker-gc}
 FORCE_CONTAINER_REMOVAL=${FORCE_CONTAINER_REMOVAL:=0}
 FORCE_IMAGE_REMOVAL=${FORCE_IMAGE_REMOVAL:=0}
 DOCKER=${DOCKER:=docker}
 PID_DIR=${PID_DIR:=/var/run}
-LOG_TO_SYSLOG=${LOG_TO_SYSLOG:=0}
+#LOG_TO_SYSLOG=${LOG_TO_SYSLOG:=0}
+LOG_TO_SYSLOG=${LOG_TO_SYSLOG:=1}
 SYSLOG_FACILITY=${SYSLOG_FACILITY:=user}
-SYSLOG_LEVEL=${SYSLOG_LEVEL:=info}
+#SYSLOG_LEVEL=${SYSLOG_LEVEL:=info}
+SYSLOG_LEVEL_INFO=${SYSLOG_LEVEL_INFO:=info}
+SYSLOG_LEVEL_WARN=${SYSLOG_LEVEL_WARN:=warn}
 SYSLOG_TAG=${SYSLOG_TAG:=docker-gc}
 DRY_RUN=${DRY_RUN:=0}
 EXCLUDE_DEAD=${EXCLUDE_DEAD:=0}
@@ -153,14 +167,24 @@ function compute_exclude_container_ids() {
         | sort -u > $EXCLUDE_CONTAINER_IDS_FILE
 }
 
+
+#When removing the state, divert the log level to warning.
 function log() {
     msg=$1
+
     if [[ $LOG_TO_SYSLOG -gt 0 ]]; then
-        logger -i -t "$SYSLOG_TAG" -p "$SYSLOG_FACILITY.$SYSLOG_LEVEL" "$msg"
+        if echo $msg | egrep -i "removing" > /dev/null ; then
+                logger -i -t "$SYSLOG_TAG" -p "$SYSLOG_FACILITY.$SYSLOG_LEVEL_WARN" "[$SYSLOG_LEVEL_WARN]$msg"
+        else
+                logger -i -t "$SYSLOG_TAG" -p "$SYSLOG_FACILITY.$SYSLOG_LEVEL_INFO" "[$SYSLOG_LEVEL_INFO]$msg"
+        fi
     else
         echo "[$(date +'%Y-%m-%dT%H:%M:%S')] [INFO] : $msg"
     fi
 }
+
+
+
 
 function container_log() {
     prefix=$1
@@ -211,20 +235,20 @@ comm -23 containers.all containers.running > containers.exited
 if [[ $EXCLUDE_DEAD -gt 0 ]]; then
     echo "Excluding dead containers"
     # List dead containers
-    $DOCKER ps -q -a -f status=dead | sort | uniq > containers.dead    
+    $DOCKER ps -q -a -f status=dead | sort | uniq > containers.dead
     comm -23 containers.exited containers.dead > containers.exited.tmp
     cat containers.exited.tmp > containers.exited
 fi
 
 container_log "Container not running" containers.exited
 
-# Find exited containers that finished at least GRACE_PERIOD_SECONDS ago
+# Find exited containers that finished at least CONTAINER_PERIOD_SECONDS ago
 > containers.reap.tmp
 cat containers.exited | while read line
 do
     EXITED=$(${DOCKER} inspect -f "{{json .State.FinishedAt}}" ${line})
     ELAPSED=$(elapsed_time $EXITED)
-    if [[ $ELAPSED -gt $GRACE_PERIOD_SECONDS ]]; then
+    if [[ $ELAPSED -gt $CONTAINER_PERIOD_SECONDS ]]; then
         echo $line >> containers.reap.tmp
     fi
 done
@@ -243,13 +267,13 @@ sort | uniq > images.used
 # List images to reap; images that existed last run and are not in use.
 $DOCKER images -q --no-trunc | sort | uniq > images.all
 
-# Find images that are created at least GRACE_PERIOD_SECONDS ago
+# Find images that are created at least IMAGE_PERIOD_SECONDS ago
 > images.reap.tmp
 cat images.all | while read line
 do
     CREATED=$(${DOCKER} inspect -f "{{.Created}}" ${line})
     ELAPSED=$(elapsed_time $CREATED)
-    if [[ $ELAPSED -gt $GRACE_PERIOD_SECONDS ]]; then
+    if [[ $ELAPSED -gt $IMAGE_PERIOD_SECONDS ]]; then
         echo $line >> images.reap.tmp
     fi
 done
@@ -282,4 +306,3 @@ else
     image_log "Removing image" images.reap
     xargs -n 1 $DOCKER rmi $FORCE_IMAGE_FLAG < images.reap &>/dev/null || true
 fi
-
